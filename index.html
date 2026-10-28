@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Undo Stack – Text Editor</title>
+<style>
+:root{--bg:#1d1b2e;--panel:#2a2744;--ink:#f1eefc;--mute:#a9a4c9;--line:#413c68;--undo:#ff8a5b;--redo:#5bd1c6;--acc:#ffd166;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Trebuchet MS","Segoe UI",system-ui,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:20px 16px 40px}
+h1{font:800 clamp(28px,6vw,44px)/1.05 "Arial Narrow","Franklin Gothic Medium",Impact,sans-serif;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 18px;max-width:62ch}
+.grid{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:14px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+h2{font-size:16px;margin:0 0 10px;display:flex;justify-content:space-between;align-items:baseline}
+h2 small{color:var(--mute);font-weight:400}
+textarea{width:100%;min-height:190px;resize:vertical;font:16px/1.5 ui-monospace,Menlo,Consolas,monospace;background:#171528;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{font:inherit;border:0;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:700;background:var(--acc);color:#2b2100}
+button.u{background:var(--undo);color:#2d1204}button.r{background:var(--redo);color:#032a27}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);font-weight:500}
+button:disabled{opacity:.35;cursor:not-allowed}
+:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.stack{display:flex;flex-direction:column;gap:6px;min-height:230px;border:2px dashed var(--line);border-top:none;border-radius:0 0 10px 10px;padding:10px 8px;position:relative}
+.item{background:#171528;border-left:5px solid var(--c);border-radius:6px;padding:6px 10px;font-size:13px;animation:pop .22s ease-out}
+.item b{display:block;font-size:13px}
+.item span{color:var(--mute);font-family:ui-monospace,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.item.top{outline:1px solid var(--c)}
+.top-tag{font-size:11px;color:var(--c);font-weight:700;letter-spacing:1px}
+.empty{color:var(--mute);font-size:13px;margin:auto}
+@keyframes pop{from{transform:translateY(-10px);opacity:0}}
+@media(prefers-reduced-motion:reduce){.item{animation:none}}
+#undoS{--c:var(--undo)}#redoS{--c:var(--redo)}
+#log{margin:0;padding:0;list-style:none;max-height:130px;overflow:auto;font:13px/1.6 ui-monospace,Menlo,monospace;color:var(--mute)}
+#log b{color:var(--undo)}#log i{color:var(--redo);font-style:normal;font-weight:700}#log em{color:var(--acc);font-style:normal;font-weight:700}
+.hint{color:var(--mute);font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+<h1>Undo Stack</h1>
+<p class="sub">A text editor whose Undo and Redo are powered by two stacks (LIFO). Every change is pushed on; undo pops the most recent one first.</p>
+
+<div class="grid">
+  <section class="panel" aria-label="Editor">
+    <h2>Editor <small id="chars">0 characters</small></h2>
+    <textarea id="ed" placeholder="Type here, then try the buttons and Undo / Redo…" aria-label="Editor text"></textarea>
+    <div class="row">
+      <button class="u" id="undo">↶ Undo</button>
+      <button class="r" id="redo">↷ Redo</button>
+    </div>
+    <div class="row">
+      <button class="ghost" data-t="upper">UPPERCASE</button>
+      <button class="ghost" data-t="lower">lowercase</button>
+      <button class="ghost" data-t="rev">Reverse words</button>
+      <button class="ghost" data-t="clear">Clear</button>
+    </div>
+    <p class="hint">Shortcuts: Ctrl/Cmd+Z to undo, Ctrl+Y or Ctrl/Cmd+Shift+Z to redo. Typing is saved as one step after a short pause.</p>
+  </section>
+
+  <section class="panel" aria-label="Undo stack">
+    <h2>Undo stack <small id="uN">size 0</small></h2>
+    <div class="top-tag" style="color:var(--undo)">▼ TOP (next undo)</div>
+    <div class="stack" id="undoS"></div>
+  </section>
+
+  <section class="panel" aria-label="Redo stack">
+    <h2>Redo stack <small id="rN">size 0</small></h2>
+    <div class="top-tag" style="color:var(--redo)">▼ TOP (next redo)</div>
+    <div class="stack" id="redoS"></div>
+  </section>
+</div>
+
+<section class="panel" style="margin-top:14px" aria-label="Operation log">
+  <h2>Operation log</h2>
+  <ul id="log"></ul>
+</section>
+</main>
+
+<script>
+// ---------- Stack (array-backed, LIFO) ----------
+class Stack {
+  constructor(){ this.items=[]; }
+  push(x){ this.items.push(x); }
+  pop(){ return this.items.pop(); }
+  peek(){ return this.items[this.items.length-1]; }
+  isEmpty(){ return this.items.length===0; }
+  get size(){ return this.items.length; }
+  clear(){ this.items=[]; }
+}
+
+const $ = id => document.getElementById(id);
+const ed = $("ed");
+const undoS = new Stack(), redoS = new Stack();
+let current = "", timer = null;
+
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const snip = s => s === "" ? "(empty)" : s.replace(/\n/g," ⏎ ").slice(0,28) + (s.length>28?"…":"");
+function log(h){ const li=document.createElement("li"); li.innerHTML=h; $("log").prepend(li); while($("log").children.length>40) $("log").lastChild.remove(); }
+
+// A change: push the OLD state on the undo stack, clear redo stack
+function commit(text,label){
+  if(text===current) return;
+  undoS.push({text:current,label});
+  log(`<b>push</b> to undo: "${label}" (size ${undoS.size})`);
+  if(!redoS.isEmpty()){ log(`redo stack cleared (${redoS.size} item${redoS.size>1?"s":""} lost)`); redoS.clear(); }
+  current = text; ed.value = text; render();
+}
+function flush(){ if(timer){ clearTimeout(timer); timer=null; commit(ed.value,"Typed text"); } }
+
+function undo(){
+  flush();
+  if(undoS.isEmpty()){ log("undo stack empty – nothing to pop"); return; }
+  const prev = undoS.pop();
+  redoS.push({text:current,label:prev.label});
+  log(`<em>pop</em> undo → <i>push</i> redo: "${prev.label}"`);
+  current = prev.text; ed.value = current; render();
+}
+function redo(){
+  flush();
+  if(redoS.isEmpty()){ log("redo stack empty – nothing to pop"); return; }
+  const nx = redoS.pop();
+  undoS.push({text:current,label:nx.label});
+  log(`<i>pop</i> redo → <b>push</b> undo: "${nx.label}"`);
+  current = nx.text; ed.value = current; render();
+}
+
+// ---------- UI ----------
+function drawStack(el,stack){
+  el.innerHTML = stack.isEmpty() ? '<span class="empty">empty</span>' : "";
+  for(let i=stack.size-1;i>=0;i--){               // top first
+    const it=stack.items[i], d=document.createElement("div");
+    d.className="item"+(i===stack.size-1?" top":"");
+    d.innerHTML=`<b>${esc(it.label)}</b><span>${esc(snip(it.text))}</span>`;
+    el.appendChild(d);
+  }
+}
+function render(){
+  drawStack($("undoS"),undoS); drawStack($("redoS"),redoS);
+  $("uN").textContent="size "+undoS.size; $("rN").textContent="size "+redoS.size;
+  $("undo").disabled = undoS.isEmpty() && !timer; $("redo").disabled = redoS.isEmpty();
+  $("chars").textContent = ed.value.length+" characters";
+}
+
+ed.addEventListener("input",()=>{ clearTimeout(timer); timer=setTimeout(()=>{timer=null;commit(ed.value,"Typed text");},700); render(); });
+ed.addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase(), m=e.ctrlKey||e.metaKey;
+  if(m&&k==="z"){ e.preventDefault(); e.shiftKey?redo():undo(); }
+  else if(m&&k==="y"){ e.preventDefault(); redo(); }
+});
+$("undo").onclick=undo; $("redo").onclick=redo;
+const tools={
+  upper:[t=>t.toUpperCase(),"UPPERCASE"],
+  lower:[t=>t.toLowerCase(),"lowercase"],
+  rev:[t=>t.split(/(\s+)/).reverse().join(""),"Reverse words"],
+  clear:[()=>"","Clear all"]
+};
+document.querySelectorAll("[data-t]").forEach(b=>b.onclick=()=>{
+  flush(); const [fn,label]=tools[b.dataset.t]; commit(fn(current),label);
+});
+
+log("editor ready – both stacks empty");
+render();
+</script>
+</body>
+</html>
